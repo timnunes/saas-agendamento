@@ -16,6 +16,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+st.write(dict(st.secrets)) #debug temporario remover depois
+
 from auth.login import mostrar_login
 
 # ===== VERIFICAR SE É PÁGINA PÚBLICA =====
