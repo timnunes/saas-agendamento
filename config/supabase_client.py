@@ -1,7 +1,6 @@
 """
 Inicialização do cliente Supabase.
-Usa st.cache_resource conforme documentação oficial do Streamlit.
-Lê credenciais de st.secrets (Streamlit Cloud) ou .env (local).
+Padrão idêntico ao dos outros apps que funcionam no Streamlit Cloud.
 """
 import os
 from supabase import create_client, Client
@@ -10,27 +9,19 @@ import streamlit as st
 
 load_dotenv()
 
-@st.cache_resource
-def _init_supabase() -> Client:
-    """Cria o cliente Supabase uma única vez e reutiliza."""
-    try:
-        url = st.secrets.get("SUPABASE_URL", "").strip()
-        key = (st.secrets.get("SUPABASE_KEY", "") or st.secrets.get("SUPABASE_ANON_KEY", "")).strip()
-    except Exception:
-        url = ""
-        key = ""
-
-    if not url:
-        url = os.environ.get("SUPABASE_URL", "").strip()
-    if not key:
-        key = os.environ.get("SUPABASE_ANON_KEY", "").strip()
-
-    if not url or not key:
-        st.error("❌ Variáveis SUPABASE_URL e SUPABASE_KEY não configuradas.")
-        st.stop()
-
-    return create_client(url, key)
-
-
 def get_supabase() -> Client:
-    return _init_supabase()
+    if "supabase_client" not in st.session_state:
+        try:
+            url = st.secrets["SUPABASE_URL"].strip()
+            key = st.secrets["SUPABASE_KEY"].strip()
+        except Exception:
+            url = os.environ.get("SUPABASE_URL", "").strip()
+            key = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+
+        if not url or not key:
+            st.error("❌ Credenciais não configuradas.")
+            st.stop()
+
+        st.session_state.supabase_client = create_client(url, key)
+
+    return st.session_state.supabase_client
