@@ -1,10 +1,20 @@
 """
 Tela de login e logout do painel administrativo.
-Usa Supabase Auth com email e senha.
+Autenticação via banco de dados (agd_perfis + agd_empresas).
+Não usa Supabase Auth — verifica email e senha diretamente pelo banco.
 """
 
 import streamlit as st
+import bcrypt
 from config.supabase_client import get_supabase
+
+
+def _verificar_senha(senha_digitada: str, senha_hash: str) -> bool:
+    """Verifica se a senha digitada corresponde ao hash armazenado."""
+    try:
+        return bcrypt.checkpw(senha_digitada.encode(), senha_hash.encode())
+    except Exception:
+        return False
 
 
 def mostrar_login():
@@ -28,67 +38,52 @@ def mostrar_login():
 
             sb = get_supabase()
             try:
-                resp = sb.auth.sign_in_with_password({"email": email, "password": senha})
-                user = resp.user
+                # Busca o perfil pelo email na tabela agd_perfis
+                # join com agd_empresas para pegar a senha_hash
+                perfil_resp = (
+                    sb.table("agd_perfis")
+                    .select("empresa_id, nome, agd_empresas(nome, slug, cor_primaria, senha_hash, email)")
+                    .execute()
+                )
 
-                if not user:
+                # Filtra pelo email
+                perfil = None
+                for p in (perfil_resp.data or []):
+                    empresa = p.get("agd_empresas") or {}
+                    if empresa.get("email", "").lower() == email.lower().strip():
+                        perfil = p
+                        break
+
+                if not perfil:
                     st.error("Email ou senha incorretos.")
                     return
 
-                # Buscar empresa vinculada ao usuário
-                perfil = (
-                    sb.table("agd_perfis")
-                    .select("empresa_id, nome")
-                    .eq("user_id", str(user.id))
-                    .execute()
-                )
-                if not perfil.data:
-                    st.error("Conta sem empresa vinculada. Contate o suporte.")
+                empresa = perfil.get("agd_empresas") or {}
+                senha_hash = empresa.get("senha_hash", "")
+
+                if not senha_hash:
+                    st.error("Senha não configurada. Contate o suporte.")
                     return
 
-                empresa_id = perfil.data[0]["empresa_id"]
+                if not _verificar_senha(senha, senha_hash):
+                    st.error("Email ou senha incorretos.")
+                    return
 
-                # Buscar dados da empresa
-                empresa_resp = (
-                    sb.table("agd_empresas")
-                    .select("nome, slug, cor_primaria")
-                    .eq("id", empresa_id)
-                    .execute()
-                )
-                empresa_nome = ""
-                empresa_slug = ""
-                empresa_cor  = "#8B5CF6"
-                if empresa_resp.data:
-                    empresa_nome = empresa_resp.data[0]["nome"]
-                    empresa_slug = empresa_resp.data[0]["slug"]
-                    empresa_cor  = empresa_resp.data[0].get("cor_primaria", "#8B5CF6")
-
-                # Salvar na sessão
-                st.session_state.user         = user
-                st.session_state.empresa_id   = empresa_id
-                st.session_state.empresa_nome = empresa_nome
-                st.session_state.empresa_slug = empresa_slug
-                st.session_state.empresa_cor  = empresa_cor
+                # Login bem-sucedido — salva na sessão
+                st.session_state.user         = {"email": email, "id": perfil["empresa_id"]}
+                st.session_state.empresa_id   = perfil["empresa_id"]
+                st.session_state.empresa_nome = empresa.get("nome", "")
+                st.session_state.empresa_slug = empresa.get("slug", "")
+                st.session_state.empresa_cor  = empresa.get("cor_primaria", "#8B5CF6")
 
                 st.rerun()
 
             except Exception as e:
-                mensagem = str(e)
-                if "Invalid login credentials" in mensagem:
-                    st.error("Email ou senha incorretos.")
-                else:
-                    st.error(f"Erro ao fazer login: {mensagem}")
+                st.error(f"Erro ao fazer login: {e}")
 
 
 def fazer_logout():
     """Faz logout do usuário e limpa a sessão."""
-    sb = get_supabase()
-    try:
-        sb.auth.sign_out()
-    except Exception:
-        pass
-
     for chave in list(st.session_state.keys()):
         del st.session_state[chave]
-
     st.rerun()

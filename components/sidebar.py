@@ -13,8 +13,6 @@ def montar_sidebar():
             unsafe_allow_html=True,
         )
         st.divider()
-
         st.markdown("<br>" * 2, unsafe_allow_html=True)
-
         if st.button("🚪 Sair", use_container_width=True):
             fazer_logout()

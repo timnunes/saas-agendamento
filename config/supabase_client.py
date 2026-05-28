@@ -12,18 +12,14 @@ load_dotenv()
 
 @st.cache_resource
 def _init_supabase() -> Client:
-    """Cria o cliente Supabase uma única vez e reutiliza em todas as sessões."""
-    # Tenta st.secrets primeiro (Streamlit Cloud)
+    """Cria o cliente Supabase uma única vez e reutiliza."""
     try:
         url = st.secrets.get("SUPABASE_URL", "").strip()
-        # Aceita tanto SUPABASE_KEY quanto SUPABASE_ANON_KEY
-        key = st.secrets.get("SUPABASE_KEY", "") or st.secrets.get("SUPABASE_ANON_KEY", "")
-        key = key.strip()
+        key = (st.secrets.get("SUPABASE_KEY", "") or st.secrets.get("SUPABASE_ANON_KEY", "")).strip()
     except Exception:
         url = ""
         key = ""
 
-    # Fallback para variáveis de ambiente (.env local)
     if not url:
         url = os.environ.get("SUPABASE_URL", "").strip()
     if not key:
@@ -37,5 +33,4 @@ def _init_supabase() -> Client:
 
 
 def get_supabase() -> Client:
-    """Retorna o cliente Supabase cacheado."""
     return _init_supabase()
