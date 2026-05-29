@@ -6,11 +6,11 @@ Não usa Supabase Auth — verifica email e senha diretamente pelo banco.
 
 import streamlit as st
 import bcrypt
+import traceback
 from config.supabase_client import get_supabase
 
 
 def _verificar_senha(senha_digitada: str, senha_hash: str) -> bool:
-    """Verifica se a senha digitada corresponde ao hash armazenado."""
     try:
         return bcrypt.checkpw(senha_digitada.encode(), senha_hash.encode())
     except Exception:
@@ -18,7 +18,6 @@ def _verificar_senha(senha_digitada: str, senha_hash: str) -> bool:
 
 
 def mostrar_login():
-    """Renderiza a tela de login."""
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("## ✂️ AgendaPro")
@@ -38,15 +37,12 @@ def mostrar_login():
 
             sb = get_supabase()
             try:
-                # Busca o perfil pelo email na tabela agd_perfis
-                # join com agd_empresas para pegar a senha_hash
                 perfil_resp = (
                     sb.table("agd_perfis")
                     .select("empresa_id, nome, agd_empresas(nome, slug, cor_primaria, senha_hash, email)")
                     .execute()
                 )
 
-                # Filtra pelo email
                 perfil = None
                 for p in (perfil_resp.data or []):
                     empresa = p.get("agd_empresas") or {}
@@ -69,7 +65,6 @@ def mostrar_login():
                     st.error("Email ou senha incorretos.")
                     return
 
-                # Login bem-sucedido — salva na sessão
                 st.session_state.user         = {"email": email, "id": perfil["empresa_id"]}
                 st.session_state.empresa_id   = perfil["empresa_id"]
                 st.session_state.empresa_nome = empresa.get("nome", "")
@@ -78,15 +73,12 @@ def mostrar_login():
 
                 st.rerun()
 
-                            
-	    except Exception as e:
-   		import traceback
+            except Exception as e:
                 st.error(f"Erro ao fazer login: {e}")
                 st.code(traceback.format_exc())
 
 
 def fazer_logout():
-    """Faz logout do usuário e limpa a sessão."""
     for chave in list(st.session_state.keys()):
         del st.session_state[chave]
     st.rerun()
