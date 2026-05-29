@@ -78,8 +78,11 @@ def mostrar_login():
 
                 st.rerun()
 
-            except Exception as e:
+                            
+	    except Exception as e:
+   		import traceback
                 st.error(f"Erro ao fazer login: {e}")
+                st.code(traceback.format_exc())
 
 
 def fazer_logout():
