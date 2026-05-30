@@ -3,9 +3,9 @@ Inicialização do cliente Supabase.
 Força IPv4 para resolver problema de DNS no Streamlit Cloud.
 """
 import os
-import socket
 import httpx
 from supabase import create_client, Client
+from supabase.client import ClientOptions
 from dotenv import load_dotenv
 import streamlit as st
 
@@ -24,11 +24,11 @@ def get_supabase() -> Client:
             st.error("❌ Credenciais não configuradas.")
             st.stop()
 
-        # Força resolução IPv4 para evitar problema de DNS no Streamlit Cloud
+        # Força IPv4 para resolver problema de DNS no Streamlit Cloud
         transport = httpx.HTTPTransport(local_address="0.0.0.0")
         http_client = httpx.Client(transport=transport)
 
-        client = create_client(url, key, options={"httpx_client": http_client})
-        st.session_state.supabase_client = client
+        options = ClientOptions(httpx_client_args={"transport": transport})
+        st.session_state.supabase_client = create_client(url, key, options=options)
 
     return st.session_state.supabase_client
