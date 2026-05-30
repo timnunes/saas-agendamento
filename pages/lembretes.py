@@ -6,7 +6,7 @@ import streamlit as st
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 from components.styles import injetar_css
-from config.supabase_client import get_supabase
+from config.supabase_client import get_supabase, get_db_conn
 
 BR_TZ = timezone(timedelta(hours=-3))
 
@@ -41,6 +41,7 @@ def mostrar():
     st.caption("Agendamentos de amanhã para enviar lembrete via WhatsApp")
 
     sb = get_supabase()
+    conn = get_db_conn()
     empresa_id = st.session_state.empresa_id
     nome_salao = st.session_state.get("empresa_nome", "nosso salão")
 
@@ -62,22 +63,26 @@ def mostrar():
     amanha_fim = datetime(amanha.year, amanha.month, amanha.day, 23, 59, 59, tzinfo=BR_TZ).isoformat()
 
     try:
-        resp = (
-            sb.table("agd_agendamentos")
-            .select("*, agd_clientes(nome, telefone), agd_servicos(nome)")
-            .eq("empresa_id", empresa_id)
-            .in_("status", ["pendente", "confirmado"])
-            .gte("data_hora_inicio", amanha_ini)
-            .lte("data_hora_inicio", amanha_fim)
-            .order("data_hora_inicio")
-            .execute()
-        )
-        agendamentos = resp.data or []
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT a.id, a.data_hora_inicio, a.lembrete_enviado,
+                   c.nome AS cliente_nome, c.telefone AS cliente_telefone,
+                   s.nome AS servico_nome
+            FROM agd_agendamentos a
+            JOIN agd_clientes c ON c.id = a.cliente_id
+            JOIN agd_servicos s ON s.id = a.servico_id
+            WHERE a.empresa_id = %s
+              AND a.status IN ('pendente', 'confirmado')
+              AND a.data_hora_inicio >= %s
+              AND a.data_hora_inicio <= %s
+            ORDER BY a.data_hora_inicio ASC
+        """, (empresa_id, amanha_ini, amanha_fim))
+        agendamentos = [dict(r) for r in cur.fetchall()]
+        cur.close()
     except Exception as e:
         st.error(f"Erro ao carregar agendamentos: {e}")
         return
 
-    # Data em português
     st.markdown(f"**{_data_pt(amanha)}** — {len(agendamentos)} agendamento(s)")
 
     if not agendamentos:
@@ -85,14 +90,14 @@ def mostrar():
         return
 
     for a in agendamentos:
-        dt = datetime.fromisoformat(a["data_hora_inicio"])
+        dt = datetime.fromisoformat(str(a["data_hora_inicio"]))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         horario = dt.astimezone(BR_TZ).strftime("%H:%M")
 
-        nome_cliente = (a.get("agd_clientes") or {}).get("nome", "—")
-        telefone_raw = (a.get("agd_clientes") or {}).get("telefone", "")
-        nome_servico = (a.get("agd_servicos") or {}).get("nome", "—")
+        nome_cliente = a.get("cliente_nome", "—")
+        telefone_raw = a.get("cliente_telefone", "") or ""
+        nome_servico = a.get("servico_nome", "—")
         lembrete_enviado = a.get("lembrete_enviado", False)
 
         telefone = "".join(filter(str.isdigit, telefone_raw))

@@ -6,7 +6,7 @@ import streamlit as st
 from datetime import datetime, timedelta, timezone, date
 from components.styles import injetar_css
 from components.cards import badge_status
-from config.supabase_client import get_supabase
+from config.supabase_client import get_supabase, get_db_conn
 
 BR_TZ = timezone(timedelta(hours=-3))
 ITENS_POR_PAGINA = 20
@@ -41,45 +41,73 @@ def _data_pt(d):
     return f"{DIAS_PT[d.weekday()]}, {d.day:02d} de {MESES_PT[d.month-1]} de {d.year}"
 
 
-def _mudar_status(sb, agend_id, novo_status, empresa_id):
+def _mudar_status(conn, agend_id, novo_status, empresa_id):
     try:
+        cur = conn.cursor()
         dados = {"status": novo_status}
         if novo_status == "concluido":
-            resp = (
-                sb.table("agd_agendamentos")
-                .select("data_hora_inicio, agd_servicos(retorno_dias)")
-                .eq("id", agend_id).execute()
-            )
-            if resp.data:
-                a = resp.data[0]
-                retorno_dias = (a.get("agd_servicos") or {}).get("retorno_dias")
-                if retorno_dias:
-                    dt = datetime.fromisoformat(a["data_hora_inicio"])
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
-                    dados["data_retorno_sugerida"] = str(dt.astimezone(BR_TZ).date() + timedelta(days=retorno_dias))
-        sb.table("agd_agendamentos").update(dados).eq("id", agend_id).eq("empresa_id", empresa_id).execute()
+            cur.execute("""
+                SELECT a.data_hora_inicio, s.retorno_dias
+                FROM agd_agendamentos a
+                JOIN agd_servicos s ON s.id = a.servico_id
+                WHERE a.id = %s
+            """, (agend_id,))
+            row = cur.fetchone()
+            if row and row["retorno_dias"]:
+                dt = datetime.fromisoformat(str(row["data_hora_inicio"]))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                data_retorno = str(dt.astimezone(BR_TZ).date() + timedelta(days=row["retorno_dias"]))
+                cur.execute("""
+                    UPDATE agd_agendamentos
+                    SET status = %s, data_retorno_sugerida = %s
+                    WHERE id = %s AND empresa_id = %s
+                """, (novo_status, data_retorno, agend_id, empresa_id))
+            else:
+                cur.execute("""
+                    UPDATE agd_agendamentos SET status = %s
+                    WHERE id = %s AND empresa_id = %s
+                """, (novo_status, agend_id, empresa_id))
+        else:
+            cur.execute("""
+                UPDATE agd_agendamentos SET status = %s
+                WHERE id = %s AND empresa_id = %s
+            """, (novo_status, agend_id, empresa_id))
+        cur.close()
         st.success("Status atualizado!")
         st.rerun()
     except Exception as e:
         st.error(f"Erro ao atualizar: {e}")
 
 
-def _buscar_agendamentos(sb, empresa_id, inicio, fim, status_filtro=None):
-    q = (
-        sb.table("agd_agendamentos")
-        .select("*, agd_clientes(nome, telefone), agd_servicos(nome, duracao_minutos, retorno_dias)")
-        .eq("empresa_id", empresa_id)
-        .gte("data_hora_inicio", inicio)
-        .lte("data_hora_inicio", fim)
-        .order("data_hora_inicio")
-    )
+def _buscar_agendamentos(conn, empresa_id, inicio, fim, status_filtro=None):
+    cur = conn.cursor()
+    sql = """
+        SELECT a.*, c.nome AS cliente_nome, c.telefone AS cliente_telefone,
+               s.nome AS servico_nome, s.duracao_minutos, s.retorno_dias
+        FROM agd_agendamentos a
+        JOIN agd_clientes c ON c.id = a.cliente_id
+        JOIN agd_servicos s ON s.id = a.servico_id
+        WHERE a.empresa_id = %s
+          AND a.data_hora_inicio >= %s
+          AND a.data_hora_inicio <= %s
+    """
+    params = [empresa_id, inicio, fim]
     if status_filtro:
-        q = q.eq("status", status_filtro)
-    return q.execute().data or []
+        sql += " AND a.status = %s"
+        params.append(status_filtro)
+    sql += " ORDER BY a.data_hora_inicio ASC"
+    cur.execute(sql, params)
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close()
+    # Normaliza para o formato esperado pelo _renderizar_agendamento
+    for r in rows:
+        r["agd_clientes"] = {"nome": r.pop("cliente_nome"), "telefone": r.pop("cliente_telefone")}
+        r["agd_servicos"] = {"nome": r.pop("servico_nome"), "duracao_minutos": r["duracao_minutos"], "retorno_dias": r.get("retorno_dias")}
+    return rows
 
 
-def _renderizar_agendamento(sb, a, empresa_id, chave, mostrar_data=False):
+def _renderizar_agendamento(conn, a, empresa_id, chave, mostrar_data=False):
     horario = _fmt_data_hora(a["data_hora_inicio"]) if mostrar_data else _fmt_dt(a["data_hora_inicio"])
     nome_cliente = (a.get("agd_clientes") or {}).get("nome", "—")
     nome_servico = (a.get("agd_servicos") or {}).get("nome", "—")
@@ -106,32 +134,29 @@ def _renderizar_agendamento(sb, a, empresa_id, chave, mostrar_data=False):
         col_a, col_b, col_c, _ = st.columns([1, 1, 1, 3])
         with col_a:
             if status == "pendente" and st.button("✅ Confirmar", key=f"conf_{chave}"):
-                _mudar_status(sb, a["id"], "confirmado", empresa_id)
+                _mudar_status(conn, a["id"], "confirmado", empresa_id)
         with col_b:
             if st.button("✔️ Concluir", key=f"conc_{chave}"):
-                _mudar_status(sb, a["id"], "concluido", empresa_id)
+                _mudar_status(conn, a["id"], "concluido", empresa_id)
         with col_c:
             if st.button("❌ Cancelar", key=f"canc_{chave}"):
-                _mudar_status(sb, a["id"], "cancelado", empresa_id)
+                _mudar_status(conn, a["id"], "cancelado", empresa_id)
 
     st.markdown("---")
 
 
-def _novo_agendamento_admin(sb, empresa_id, prefixo):
+def _novo_agendamento_admin(sb, conn, empresa_id, prefixo):
     contador_key = f"form_counter_{prefixo}"
     if contador_key not in st.session_state:
         st.session_state[contador_key] = 0
     contador = st.session_state[contador_key]
 
     with st.expander("➕ Novo Agendamento", expanded=False):
-
-        # Buscar serviços
         servicos = sb.table("agd_servicos").select("id, nome, duracao_minutos").eq("empresa_id", empresa_id).eq("ativo", True).order("nome").execute().data or []
         if not servicos:
             st.warning("Nenhum serviço cadastrado. Cadastre um serviço primeiro.")
             return
 
-        # ── Busca de cliente por texto ────────────────────────────────────
         busca_cliente = st.text_input(
             "🔍 Buscar cliente por nome ou telefone",
             placeholder="Digite o nome ou telefone...",
@@ -153,7 +178,7 @@ def _novo_agendamento_admin(sb, empresa_id, prefixo):
                 resultado = []
 
             if not resultado:
-                st.warning("Nenhum cliente encontrado. Verifique o nome ou cadastre o cliente na tela Clientes.")
+                st.warning("Nenhum cliente encontrado.")
             else:
                 opcoes = {f"{c['nome']} — {c['telefone']}": c for c in resultado}
                 escolha = st.selectbox("Selecione o cliente", list(opcoes.keys()), key=f"sel_cliente_{prefixo}_{contador}")
@@ -163,7 +188,6 @@ def _novo_agendamento_admin(sb, empresa_id, prefixo):
         else:
             st.caption("Digite o nome ou telefone do cliente para buscá-lo.")
 
-        # ── Serviço, data e horário ───────────────────────────────────────
         opcoes_servicos = {s["nome"]: s for s in servicos}
         col2, col3, col4 = st.columns(3)
         with col2:
@@ -178,17 +202,8 @@ def _novo_agendamento_admin(sb, empresa_id, prefixo):
         recorrente = st.checkbox("🔁 Repetir semanalmente?", key=f"novo_recorr_{prefixo}_{contador}")
         semanas = 1
         if recorrente:
-            semanas = st.slider(
-                "Repetir por quantas semanas?",
-                min_value=2, max_value=26, value=8, step=1,
-                key=f"novo_semanas_{prefixo}_{contador}",
-            )
-            st.caption(
-                f"Serão criados **{semanas} agendamentos** — "
-                f"de {data_ag.strftime('%d/%m/%Y')} até "
-                f"{(data_ag + timedelta(weeks=semanas-1)).strftime('%d/%m/%Y')} "
-                f"({DIAS_PT[data_ag.weekday()]}s às {hora_ag.strftime('%H:%M')})"
-            )
+            semanas = st.slider("Repetir por quantas semanas?", min_value=2, max_value=26, value=8, step=1, key=f"novo_semanas_{prefixo}_{contador}")
+            st.caption(f"Serão criados **{semanas} agendamentos** — de {data_ag.strftime('%d/%m/%Y')} até {(data_ag + timedelta(weeks=semanas-1)).strftime('%d/%m/%Y')} ({DIAS_PT[data_ag.weekday()]}s às {hora_ag.strftime('%H:%M')})")
 
         label_btn = f"💾 Salvar {semanas} agendamento(s)" if recorrente else "💾 Salvar Agendamento"
         if st.button(label_btn, key=f"novo_salvar_{prefixo}_{contador}"):
@@ -203,7 +218,7 @@ def _novo_agendamento_admin(sb, empresa_id, prefixo):
                 for semana in range(semanas):
                     data_atual = data_ag + timedelta(weeks=semana)
                     dt_inicio = datetime(data_atual.year, data_atual.month, data_atual.day,
-                                         hora_ag.hour, hora_ag.minute, 0, tzinfo=BR_TZ)
+                                        hora_ag.hour, hora_ag.minute, 0, tzinfo=BR_TZ)
                     dt_fim = dt_inicio + timedelta(minutes=servico["duracao_minutos"])
 
                     conflito = sb.table("agd_agendamentos").select("id")\
@@ -233,35 +248,34 @@ def _novo_agendamento_admin(sb, empresa_id, prefixo):
                 if criados > 0:
                     st.session_state[contador_key] += 1
                     st.rerun()
-
             except Exception as e:
                 st.error(f"Erro ao salvar: {e}")
 
 
-def _aba_hoje(sb, empresa_id):
+def _aba_hoje(sb, conn, empresa_id):
     hoje = datetime.now(BR_TZ).date()
     inicio = datetime(hoje.year, hoje.month, hoje.day, 0, 0, 0, tzinfo=BR_TZ).isoformat()
     fim = datetime(hoje.year, hoje.month, hoje.day, 23, 59, 59, tzinfo=BR_TZ).isoformat()
 
     try:
-        agendamentos = _buscar_agendamentos(sb, empresa_id, inicio, fim)
+        agendamentos = _buscar_agendamentos(conn, empresa_id, inicio, fim)
     except Exception as e:
         st.error(f"Erro ao buscar agendamentos: {e}")
         return
 
     st.markdown(f"**{_data_pt(hoje)}**")
     st.caption(f"{len(agendamentos)} agendamento(s) hoje")
-    _novo_agendamento_admin(sb, empresa_id, "hoje")
+    _novo_agendamento_admin(sb, conn, empresa_id, "hoje")
 
     if not agendamentos:
         st.info("Nenhum agendamento para hoje.")
         return
 
     for i, a in enumerate(agendamentos):
-        _renderizar_agendamento(sb, a, empresa_id, f"hoje_{i}_{a['id'][:8]}")
+        _renderizar_agendamento(conn, a, empresa_id, f"hoje_{i}_{a['id'][:8]}")
 
 
-def _aba_semana(sb, empresa_id):
+def _aba_semana(sb, conn, empresa_id):
     hoje = datetime.now(BR_TZ).date()
     inicio_semana_default = hoje - timedelta(days=hoje.weekday())
 
@@ -279,12 +293,12 @@ def _aba_semana(sb, empresa_id):
     fim = datetime(fim_semana.year, fim_semana.month, fim_semana.day, 23, 59, 59, tzinfo=BR_TZ).isoformat()
 
     try:
-        agendamentos = _buscar_agendamentos(sb, empresa_id, inicio, fim)
+        agendamentos = _buscar_agendamentos(conn, empresa_id, inicio, fim)
     except Exception as e:
         st.error(f"Erro ao buscar agendamentos: {e}")
         return
 
-    _novo_agendamento_admin(sb, empresa_id, "semana")
+    _novo_agendamento_admin(sb, conn, empresa_id, "semana")
 
     por_dia = {}
     for a in agendamentos:
@@ -300,10 +314,10 @@ def _aba_semana(sb, empresa_id):
             if not lista:
                 st.caption("Sem agendamentos.")
             for i, a in enumerate(lista):
-                _renderizar_agendamento(sb, a, empresa_id, f"sem_{dia_fmt}_{i}_{a['id'][:8]}")
+                _renderizar_agendamento(conn, a, empresa_id, f"sem_{dia_fmt}_{i}_{a['id'][:8]}")
 
 
-def _aba_todos(sb, empresa_id):
+def _aba_todos(sb, conn, empresa_id):
     hoje = datetime.now(BR_TZ).date()
 
     col1, col2, col3 = st.columns(3)
@@ -319,7 +333,7 @@ def _aba_todos(sb, empresa_id):
     status_filtro = None if filtro_status == "Todos" else filtro_status
 
     try:
-        todos = _buscar_agendamentos(sb, empresa_id, inicio, fim, status_filtro)
+        todos = _buscar_agendamentos(conn, empresa_id, inicio, fim, status_filtro)
     except Exception as e:
         st.error(f"Erro ao buscar agendamentos: {e}")
         return
@@ -336,8 +350,7 @@ def _aba_todos(sb, empresa_id):
         return
 
     for i, a in enumerate(pagina_itens):
-        # Na aba Todos mostra data + hora
-        _renderizar_agendamento(sb, a, empresa_id, f"todos_{pagina}_{i}_{a['id'][:8]}", mostrar_data=True)
+        _renderizar_agendamento(conn, a, empresa_id, f"todos_{pagina}_{i}_{a['id'][:8]}", mostrar_data=True)
 
 
 def mostrar():
@@ -345,13 +358,14 @@ def mostrar():
     st.title("📅 Agenda")
 
     sb = get_supabase()
+    conn = get_db_conn()
     empresa_id = st.session_state.empresa_id
 
     aba_hoje, aba_semana, aba_todos = st.tabs(["📆 Hoje", "🗓️ Semana", "📋 Todos"])
 
     with aba_hoje:
-        _aba_hoje(sb, empresa_id)
+        _aba_hoje(sb, conn, empresa_id)
     with aba_semana:
-        _aba_semana(sb, empresa_id)
+        _aba_semana(sb, conn, empresa_id)
     with aba_todos:
-        _aba_todos(sb, empresa_id)
+        _aba_todos(sb, conn, empresa_id)

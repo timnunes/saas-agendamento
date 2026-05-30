@@ -5,7 +5,7 @@ Clientes — lista, busca, cadastro e histórico de atendimentos.
 import streamlit as st
 from datetime import datetime, timedelta, timezone
 from components.styles import injetar_css
-from config.supabase_client import get_supabase
+from config.supabase_client import get_supabase, get_db_conn
 
 BR_TZ = timezone(timedelta(hours=-3))
 
@@ -17,18 +17,19 @@ def _fmt_dt(iso_str: str) -> str:
     return dt.astimezone(BR_TZ).strftime("%d/%m/%Y %H:%M")
 
 
-def _historico_cliente(sb, cliente: dict, empresa_id: str):
+def _historico_cliente(conn, cliente: dict, empresa_id: str):
     with st.expander(f"📋 Histórico de {cliente['nome']}", expanded=True):
         try:
-            resp = (
-                sb.table("agd_agendamentos")
-                .select("*, agd_servicos(nome, duracao_minutos)")
-                .eq("cliente_id", cliente["id"])
-                .eq("empresa_id", empresa_id)
-                .order("data_hora_inicio", desc=True)
-                .execute()
-            )
-            agendamentos = resp.data or []
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT a.data_hora_inicio, a.status, s.nome AS servico_nome, s.duracao_minutos
+                FROM agd_agendamentos a
+                JOIN agd_servicos s ON s.id = a.servico_id
+                WHERE a.cliente_id = %s AND a.empresa_id = %s
+                ORDER BY a.data_hora_inicio DESC
+            """, (cliente["id"], empresa_id))
+            agendamentos = [dict(r) for r in cur.fetchall()]
+            cur.close()
         except Exception as e:
             st.error(f"Erro ao carregar histórico: {e}")
             return
@@ -38,8 +39,8 @@ def _historico_cliente(sb, cliente: dict, empresa_id: str):
             return
 
         for a in agendamentos:
-            dt_fmt = _fmt_dt(a["data_hora_inicio"])
-            nome_serv = (a.get("agd_servicos") or {}).get("nome", "—")
+            dt_fmt = _fmt_dt(str(a["data_hora_inicio"]))
+            nome_serv = a.get("servico_nome", "—")
             status = a.get("status", "—")
             badges = {"pendente": "⏳", "confirmado": "✅", "concluido": "✔️", "cancelado": "❌"}
             icone = badges.get(status, "•")
@@ -79,8 +80,6 @@ def _formulario_editar(sb, cliente: dict, empresa_id: str):
 
 
 def _formulario_novo_cliente(sb, empresa_id: str):
-    """Formulário para cadastrar novo cliente diretamente no painel."""
-    # Contador para resetar o formulário após salvar
     if "counter_novo_cliente" not in st.session_state:
         st.session_state.counter_novo_cliente = 0
     contador = st.session_state.counter_novo_cliente
@@ -125,14 +124,12 @@ def mostrar():
     st.title("👥 Clientes")
 
     sb = get_supabase()
+    conn = get_db_conn()
     empresa_id = st.session_state.empresa_id
 
-    # Botão de cadastrar novo cliente
     _formulario_novo_cliente(sb, empresa_id)
-
     st.divider()
 
-    # Barra de busca
     busca = st.text_input("🔍 Buscar por nome ou telefone", placeholder="Ex: Maria ou 11999990000")
 
     try:
@@ -156,18 +153,16 @@ def mostrar():
 
     for c in clientes:
         try:
-            resp_hist = (
-                sb.table("agd_agendamentos")
-                .select("data_hora_inicio")
-                .eq("cliente_id", c["id"])
-                .eq("empresa_id", empresa_id)
-                .eq("status", "concluido")
-                .order("data_hora_inicio", desc=True)
-                .execute()
-            )
-            hist = resp_hist.data or []
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT data_hora_inicio FROM agd_agendamentos
+                WHERE cliente_id = %s AND empresa_id = %s AND status = 'concluido'
+                ORDER BY data_hora_inicio DESC
+            """, (c["id"], empresa_id))
+            hist = cur.fetchall()
+            cur.close()
             total_visitas = len(hist)
-            ultimo = _fmt_dt(hist[0]["data_hora_inicio"]) if hist else "—"
+            ultimo = _fmt_dt(str(hist[0]["data_hora_inicio"])) if hist else "—"
         except Exception:
             total_visitas = 0
             ultimo = "—"
@@ -197,7 +192,7 @@ def mostrar():
             st.rerun()
 
         if st.session_state.get("historico_cliente") == c["id"]:
-            _historico_cliente(sb, c, empresa_id)
+            _historico_cliente(conn, c, empresa_id)
 
         if st.session_state.get("editando_cliente") == c["id"]:
             _formulario_editar(sb, c, empresa_id)
