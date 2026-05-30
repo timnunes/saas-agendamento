@@ -1,7 +1,5 @@
-streamlit==1.39.0
-supabase==2.18.1
-pandas==2.2.3
-python-dateutil==2.9.0
-bcrypt
+streamlit==1.45.0
+psycopg2-binary
 python-dotenv==1.0.1
-st-supabase-connection
+pandas==2.2.3
+bcrypt
