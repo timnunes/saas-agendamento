@@ -16,44 +16,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ===== DEBUG TEMPORÁRIO — REMOVER APÓS RESOLVER =====
-with st.expander("🔍 DEBUG — Secrets (remover após resolver)", expanded=True):
-    st.subheader("Conteúdo de st.secrets")
-    try:
-        secrets_dict = dict(st.secrets)
-        if secrets_dict:
-            for chave, valor in secrets_dict.items():
-                valor_str = str(valor)
-                resumo = valor_str[:30] + "..." if len(valor_str) > 30 else valor_str
-                st.write(f"**{chave}** → `{resumo}`")
-        else:
-            st.error("❌ st.secrets está VAZIO")
-    except Exception as e:
-        st.error(f"Erro ao ler st.secrets: {e}")
-
-    st.subheader("Teste direto: DATABASE_URL")
-    try:
-        db_url = st.secrets["DATABASE_URL"]
-        resumo = db_url[:40] + "..." if len(db_url) > 40 else db_url
-        st.success(f"✅ Encontrada: `{resumo}`")
-    except KeyError:
-        st.error("❌ Chave DATABASE_URL não encontrada")
-    except Exception as e:
-        st.error(f"Erro: {e}")
-
-    st.subheader("Teste de conexão PostgreSQL")
-    try:
-        import psycopg2
-        db_url = st.secrets["DATABASE_URL"]
-        conn = psycopg2.connect(db_url, connect_timeout=10)
-        conn.close()
-        st.success("✅ Conexão com o banco OK!")
-    except KeyError:
-        st.warning("⏭️ Pulando — DATABASE_URL não encontrada")
-    except Exception as e:
-        st.error(f"❌ Falha na conexão: {e}")
-# ===== FIM DO DEBUG =====
-
 from auth.login import mostrar_login
 
 # ===== VERIFICAR SE É PÁGINA PÚBLICA =====
