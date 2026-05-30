@@ -90,7 +90,7 @@ def mostrar():
         return
 
     for a in agendamentos:
-        dt = datetime.fromisoformat(str(a["data_hora_inicio"]))
+        dt = a["data_hora_inicio"] if isinstance(a["data_hora_inicio"], datetime) else datetime.fromisoformat(str(a["data_hora_inicio"]))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         horario = dt.astimezone(BR_TZ).strftime("%H:%M")

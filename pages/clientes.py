@@ -10,8 +10,8 @@ from config.supabase_client import get_supabase, get_db_conn
 BR_TZ = timezone(timedelta(hours=-3))
 
 
-def _fmt_dt(iso_str: str) -> str:
-    dt = datetime.fromisoformat(iso_str)
+def _fmt_dt(iso_str) -> str:
+    dt = iso_str if isinstance(iso_str, datetime) else datetime.fromisoformat(str(iso_str))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(BR_TZ).strftime("%d/%m/%Y %H:%M")

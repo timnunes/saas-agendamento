@@ -64,7 +64,7 @@ def mostrar():
         nome_servico = a.get("servico_nome", "—")
         data_retorno = a.get("data_retorno_sugerida", "—")
 
-        dt = datetime.fromisoformat(str(a["data_hora_inicio"]))
+        dt = a["data_hora_inicio"] if isinstance(a["data_hora_inicio"], datetime) else datetime.fromisoformat(str(a["data_hora_inicio"]))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         data_atend = dt.astimezone(BR_TZ).strftime("%d/%m/%Y")
