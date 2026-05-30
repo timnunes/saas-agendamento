@@ -4,10 +4,10 @@ Mostra KPIs: agendamentos de hoje, semana, clientes, faturamento e próximo agen
 """
 
 import streamlit as st
-from datetime import datetime, timedelta, timezone, date
+from datetime import datetime, timedelta, timezone
 from components.styles import injetar_css
 from components.cards import card_metrica
-from config.supabase_client import get_supabase
+from config.supabase_client import get_db_conn
 
 BR_TZ = timezone(timedelta(hours=-3))
 
@@ -16,7 +16,7 @@ def mostrar():
     injetar_css()
     st.title("📊 Dashboard")
 
-    sb = get_supabase()
+    conn = get_db_conn()
     empresa_id = st.session_state.empresa_id
 
     hoje = datetime.now(BR_TZ).date()
@@ -24,7 +24,6 @@ def mostrar():
     fim_semana = inicio_semana + timedelta(days=6)
     inicio_mes = hoje.replace(day=1)
 
-    # Datas em formato ISO com fuso horário para queries
     hoje_ini = datetime(hoje.year, hoje.month, hoje.day, 0, 0, 0, tzinfo=BR_TZ).isoformat()
     hoje_fim = datetime(hoje.year, hoje.month, hoje.day, 23, 59, 59, tzinfo=BR_TZ).isoformat()
     semana_ini = datetime(inicio_semana.year, inicio_semana.month, inicio_semana.day, 0, 0, 0, tzinfo=BR_TZ).isoformat()
@@ -32,75 +31,70 @@ def mostrar():
     mes_ini = datetime(inicio_mes.year, inicio_mes.month, inicio_mes.day, 0, 0, 0, tzinfo=BR_TZ).isoformat()
 
     try:
+        cur = conn.cursor()
+
         # Agendamentos de hoje (não cancelados)
-        resp_hoje = (
-            sb.table("agd_agendamentos")
-            .select("id")
-            .eq("empresa_id", empresa_id)
-            .gte("data_hora_inicio", hoje_ini)
-            .lte("data_hora_inicio", hoje_fim)
-            .neq("status", "cancelado")
-            .execute()
-        )
-        total_hoje = len(resp_hoje.data) if resp_hoje.data else 0
+        cur.execute("""
+            SELECT COUNT(*) FROM agd_agendamentos
+            WHERE empresa_id = %s
+              AND status != 'cancelado'
+              AND data_hora_inicio >= %s
+              AND data_hora_inicio <= %s
+        """, (empresa_id, hoje_ini, hoje_fim))
+        total_hoje = cur.fetchone()["count"]
 
         # Agendamentos desta semana (não cancelados)
-        resp_semana = (
-            sb.table("agd_agendamentos")
-            .select("id")
-            .eq("empresa_id", empresa_id)
-            .gte("data_hora_inicio", semana_ini)
-            .lte("data_hora_inicio", semana_fim)
-            .neq("status", "cancelado")
-            .execute()
-        )
-        total_semana = len(resp_semana.data) if resp_semana.data else 0
+        cur.execute("""
+            SELECT COUNT(*) FROM agd_agendamentos
+            WHERE empresa_id = %s
+              AND status != 'cancelado'
+              AND data_hora_inicio >= %s
+              AND data_hora_inicio <= %s
+        """, (empresa_id, semana_ini, semana_fim))
+        total_semana = cur.fetchone()["count"]
 
         # Total de clientes
-        resp_clientes = (
-            sb.table("agd_clientes")
-            .select("id", count="exact")
-            .eq("empresa_id", empresa_id)
-            .execute()
-        )
-        total_clientes = resp_clientes.count if resp_clientes.count is not None else 0
+        cur.execute("""
+            SELECT COUNT(*) FROM agd_clientes
+            WHERE empresa_id = %s
+        """, (empresa_id,))
+        total_clientes = cur.fetchone()["count"]
 
         # Faturamento do mês (serviços concluídos)
-        resp_fat = (
-            sb.table("agd_agendamentos")
-            .select("agd_servicos(preco)")
-            .eq("empresa_id", empresa_id)
-            .eq("status", "concluido")
-            .gte("data_hora_inicio", mes_ini)
-            .execute()
-        )
-        faturamento = sum(
-            (a.get("agd_servicos") or {}).get("preco") or 0
-            for a in (resp_fat.data or [])
-        )
+        cur.execute("""
+            SELECT COALESCE(SUM(s.preco), 0) AS total
+            FROM agd_agendamentos a
+            JOIN agd_servicos s ON s.id = a.servico_id
+            WHERE a.empresa_id = %s
+              AND a.status = 'concluido'
+              AND a.data_hora_inicio >= %s
+        """, (empresa_id, mes_ini))
+        faturamento = float(cur.fetchone()["total"] or 0)
 
         # Clientes para retornar esta semana
-        resp_retencao = (
-            sb.table("agd_agendamentos")
-            .select("id")
-            .eq("empresa_id", empresa_id)
-            .gte("data_retorno_sugerida", str(hoje))
-            .lte("data_retorno_sugerida", str(fim_semana))
-            .execute()
-        )
-        total_retencao = len(resp_retencao.data) if resp_retencao.data else 0
+        cur.execute("""
+            SELECT COUNT(*) FROM agd_agendamentos
+            WHERE empresa_id = %s
+              AND data_retorno_sugerida >= %s
+              AND data_retorno_sugerida <= %s
+        """, (empresa_id, str(hoje), str(fim_semana)))
+        total_retencao = cur.fetchone()["count"]
 
         # Próximo agendamento
-        resp_proximo = (
-            sb.table("agd_agendamentos")
-            .select("data_hora_inicio, agd_clientes(nome), agd_servicos(nome)")
-            .eq("empresa_id", empresa_id)
-            .in_("status", ["pendente", "confirmado"])
-            .gte("data_hora_inicio", datetime.now(BR_TZ).isoformat())
-            .order("data_hora_inicio")
-            .limit(1)
-            .execute()
-        )
+        cur.execute("""
+            SELECT a.data_hora_inicio, c.nome AS cliente_nome, s.nome AS servico_nome
+            FROM agd_agendamentos a
+            JOIN agd_clientes c ON c.id = a.cliente_id
+            JOIN agd_servicos s ON s.id = a.servico_id
+            WHERE a.empresa_id = %s
+              AND a.status IN ('pendente', 'confirmado')
+              AND a.data_hora_inicio >= %s
+            ORDER BY a.data_hora_inicio ASC
+            LIMIT 1
+        """, (empresa_id, datetime.now(BR_TZ).isoformat()))
+        proximo = cur.fetchone()
+
+        cur.close()
 
     except Exception as e:
         st.error(f"Erro ao carregar dados do dashboard: {e}")
@@ -127,19 +121,15 @@ def mostrar():
     st.divider()
     st.subheader("⏰ Próximo Agendamento")
 
-    if resp_proximo.data:
-        p = resp_proximo.data[0]
-        dt = datetime.fromisoformat(p["data_hora_inicio"])
+    if proximo:
+        dt = datetime.fromisoformat(str(proximo["data_hora_inicio"]))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         dt_br = dt.astimezone(BR_TZ)
 
-        nome_cliente = (p.get("agd_clientes") or {}).get("nome", "—")
-        nome_servico = (p.get("agd_servicos") or {}).get("nome", "—")
-
         st.info(
-            f"**{nome_cliente}** — {nome_servico} às **{dt_br.strftime('%H:%M')}** "
-            f"({dt_br.strftime('%d/%m/%Y')})"
+            f"**{proximo['cliente_nome']}** — {proximo['servico_nome']} às "
+            f"**{dt_br.strftime('%H:%M')}** ({dt_br.strftime('%d/%m/%Y')})"
         )
     else:
         st.info("Nenhum agendamento futuro encontrado.")
