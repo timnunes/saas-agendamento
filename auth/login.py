@@ -7,7 +7,7 @@ Não usa Supabase Auth — verifica email e senha diretamente pelo banco.
 import streamlit as st
 import bcrypt
 import traceback
-from config.supabase_client import get_supabase
+from config.supabase_client import get_db_conn
 
 
 def _verificar_senha(senha_digitada: str, senha_hash: str) -> bool:
@@ -35,27 +35,31 @@ def mostrar_login():
                 st.error("Preencha email e senha.")
                 return
 
-            sb = get_supabase()
             try:
-                perfil_resp = (
-                    sb.table("agd_perfis")
-                    .select("empresa_id, nome, agd_empresas(nome, slug, cor_primaria, senha_hash, email)")
-                    .execute()
-                )
+                conn = get_db_conn()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT
+                        p.empresa_id,
+                        p.nome AS perfil_nome,
+                        e.nome AS empresa_nome,
+                        e.slug,
+                        e.cor_primaria,
+                        e.senha_hash,
+                        e.email
+                    FROM agd_perfis p
+                    JOIN agd_empresas e ON e.id = p.empresa_id
+                    WHERE LOWER(e.email) = LOWER(%s)
+                    LIMIT 1
+                """, (email.strip(),))
+                row = cur.fetchone()
+                cur.close()
 
-                perfil = None
-                for p in (perfil_resp.data or []):
-                    empresa = p.get("agd_empresas") or {}
-                    if empresa.get("email", "").lower() == email.lower().strip():
-                        perfil = p
-                        break
-
-                if not perfil:
+                if not row:
                     st.error("Email ou senha incorretos.")
                     return
 
-                empresa = perfil.get("agd_empresas") or {}
-                senha_hash = empresa.get("senha_hash", "")
+                senha_hash = row.get("senha_hash", "")
 
                 if not senha_hash:
                     st.error("Senha não configurada. Contate o suporte.")
@@ -65,11 +69,11 @@ def mostrar_login():
                     st.error("Email ou senha incorretos.")
                     return
 
-                st.session_state.user         = {"email": email, "id": perfil["empresa_id"]}
-                st.session_state.empresa_id   = perfil["empresa_id"]
-                st.session_state.empresa_nome = empresa.get("nome", "")
-                st.session_state.empresa_slug = empresa.get("slug", "")
-                st.session_state.empresa_cor  = empresa.get("cor_primaria", "#8B5CF6")
+                st.session_state.user         = {"email": email, "id": row["empresa_id"]}
+                st.session_state.empresa_id   = row["empresa_id"]
+                st.session_state.empresa_nome = row["empresa_nome"] or ""
+                st.session_state.empresa_slug = row["slug"] or ""
+                st.session_state.empresa_cor  = row["cor_primaria"] or "#8B5CF6"
 
                 st.rerun()
 
